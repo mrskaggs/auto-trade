@@ -122,32 +122,52 @@ class RSIStrategy:
             bars_df = self.last_data
             logging.info(f"[Data] {self.symbol} - Using cached data ({len(bars_df)} bars)")
         else:
-            # Fetch fresh data from yfinance with retry logic
+            # Fetch fresh data - use CoinGecko for crypto, Yahoo for stocks
             bars_df = None
             for attempt in range(3):
                 try:
-                    symbol_for_yf = f"{self.symbol[:-3]}-USD" if is_crypto else self.symbol
-                    
-                    # For crypto, use hourly bars (more reliable on Yahoo Finance)
-                    # For stocks, use daily bars
                     if is_crypto:
-                        data = yf.download(symbol_for_yf, period='30d', interval='1h', progress=False, auto_adjust=True)
-                        bars_to_take = self.period * 24  # 14 periods * 24 hours = 14 "days" of hourly data
+                        # Use CoinGecko API for crypto historical data (more reliable)
+                        coin_map = {
+                            'BTC/USD': 'bitcoin',
+                            'ETH/USD': 'ethereum',
+                            'SOL/USD': 'solana',
+                            'ADA/USD': 'cardano',
+                            'DOGE/USD': 'dogecoin'
+                        }
+                        coin_id = coin_map.get(api_symbol)
+                        if coin_id:
+                            # Get 30 days of daily data from CoinGecko
+                            url = f'https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart'
+                            params = {'vs_currency': 'usd', 'days': '30', 'interval': 'daily'}
+                            response = requests.get(url, params=params, timeout=10)
+                            data = response.json()
+                            
+                            if 'prices' in data:
+                                # Convert to DataFrame
+                                prices = data['prices']
+                                df = pd.DataFrame(prices, columns=['timestamp', 'Close'])
+                                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                                df = df.set_index('timestamp')
+                                bars_df = df
+                                self.last_data = bars_df
+                                self.last_fetch_time = current_time
+                                logging.info(f"[Data] {self.symbol} - Fetched {len(bars_df)} daily bars from CoinGecko")
+                                break
                     else:
-                        data = yf.download(symbol_for_yf, period='60d', interval='1d', progress=False, auto_adjust=True)
-                        bars_to_take = 30
+                        # Use Yahoo Finance for stocks (daily bars)
+                        data = yf.download(self.symbol, period='60d', interval='1d', progress=False, auto_adjust=True)
+                        if not data.empty and len(data) >= self.period + 1:
+                            bars_df = data.tail(30)
+                            self.last_data = bars_df
+                            self.last_fetch_time = current_time
+                            logging.info(f"[Data] {self.symbol} - Fetched {len(bars_df)} daily bars from Yahoo Finance")
+                            break
                     
-                    if not data.empty and len(data) >= self.period + 1:
-                        bars_df = data.tail(bars_to_take)
-                        self.last_data = bars_df
-                        self.last_fetch_time = current_time
-                        interval_name = "hourly" if is_crypto else "daily"
-                        logging.info(f"[Data] {self.symbol} - Fetched {len(bars_df)} {interval_name} bars")
-                        break
-                    else:
-                        logging.warning(f"[Data] Attempt {attempt+1}: Insufficient data ({len(data) if not data.empty else 0} bars)")
+                    if bars_df is None or bars_df.empty or len(bars_df) < self.period + 1:
+                        logging.warning(f"[Data] Attempt {attempt+1}: Insufficient data ({len(bars_df) if bars_df is not None else 0} bars)")
                         if attempt < 2:
-                            time.sleep(2)  # Wait before retry
+                            time.sleep(2)
                 except Exception as e:
                     logging.error(f"[Data] Attempt {attempt+1} error: {e}")
                     if attempt < 2:
