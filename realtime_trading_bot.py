@@ -172,25 +172,41 @@ class HybridStrategy:
                         }
                         coin_id = coin_map.get(api_symbol)
                         if coin_id:
-                            # Get hourly data for crypto (RSI periods = 14 hours ~= 14 days worth)
-                            # Fetch enough data: 14 periods * 24 hours = 336 hours (14 days)
+                            # CoinGecko auto-returns hourly for <90 days, daily for >90 days
+                            # Fetch 14 days of data (will be hourly automatically)
                             url = f'https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart'
-                            params = {'vs_currency': 'usd', 'days': '30', 'interval': 'hourly'}
+                            params = {'vs_currency': 'usd', 'days': '14'}
                             response = requests.get(url, params=params, timeout=10)
+                            
+                            if response.status_code != 200:
+                                logging.error(f"[Data] CoinGecko API error: {response.status_code}")
+                                continue
+                            
                             data = response.json()
                             
-                            if 'prices' in data:
+                            if 'prices' in data and len(data['prices']) > 0:
                                 # Convert to DataFrame
                                 prices = data['prices']
                                 df = pd.DataFrame(prices, columns=['timestamp', 'Close'])
                                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
                                 df = df.set_index('timestamp')
-                                # Take last 336 hours (14 days worth for RSI 14)
-                                bars_df = df.tail(self.rsi_period * 24)
+                                
+                                # CoinGecko returns hourly data for <90 days automatically
+                                bars_df = df
                                 self.last_data = bars_df
                                 self.last_fetch_time = current_time
-                                logging.info(f"[Data] {self.symbol} - Fetched {len(bars_df)} hourly bars from CoinGecko")
+                                
+                                # Determine interval from data
+                                if len(df) > 1:
+                                    time_diff = (df.index[1] - df.index[0]).total_seconds() / 3600
+                                    interval = "hourly" if time_diff <= 1.5 else "daily"
+                                else:
+                                    interval = "unknown"
+                                
+                                logging.info(f"[Data] {self.symbol} - Fetched {len(bars_df)} {interval} bars from CoinGecko")
                                 break
+                            else:
+                                logging.warning(f"[Data] No price data in CoinGecko response")
                     else:
                         # Use Yahoo Finance for stocks (daily bars)
                         data = yf.download(self.symbol, period='60d', interval='1d', progress=False, auto_adjust=True)
