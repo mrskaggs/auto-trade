@@ -31,6 +31,8 @@ TRADING_RISK_PCT = float(os.getenv('TRADING_RISK_PCT', '1.0'))
 RSI_PERIOD = int(os.getenv('RSI_PERIOD', '14'))
 RSI_BUY_THRESH = int(os.getenv('RSI_BUY_THRESH', '30'))
 RSI_SELL_THRESH = int(os.getenv('RSI_SELL_THRESH', '70'))
+EMA_SHORT = int(os.getenv('EMA_SHORT', '9'))
+EMA_LONG = int(os.getenv('EMA_LONG', '21'))
 
 # Initialize Alpaca clients
 trading_client = TradingClient(API_KEY, SECRET_KEY, paper=True)
@@ -83,6 +85,36 @@ def calculate_rsi(prices, period=14):
     
     return rsi
 
+def calculate_ema(prices, span):
+    """Calculate Exponential Moving Average"""
+    return prices.ewm(span=span, adjust=False).mean()
+
+def detect_ema_crossover(ema_short, ema_long):
+    """Detect EMA crossover: returns 'BULLISH', 'BEARISH', or 'NONE'"""
+    # Current values
+    short_now = ema_short.iloc[-1]
+    long_now = ema_long.iloc[-1]
+    
+    # Previous values
+    short_prev = ema_short.iloc[-2]
+    long_prev = ema_long.iloc[-2]
+    
+    # Bullish crossover: short was below, now above
+    if short_prev <= long_prev and short_now > long_now:
+        return 'BULLISH'
+    
+    # Bearish crossover: short was above, now below
+    if short_prev >= long_prev and short_now < long_now:
+        return 'BEARISH'
+    
+    # Check if currently in bullish or bearish state
+    if short_now > long_now:
+        return 'BULLISH_TREND'
+    elif short_now < long_now:
+        return 'BEARISH_TREND'
+    
+    return 'NONE'
+
 def safe_float(value, default=0.0):
     """Safely extract float from potential Series or scalar"""
     try:
@@ -94,12 +126,14 @@ def safe_float(value, default=0.0):
     except:
         return default
 
-class RSIStrategy:
-    def __init__(self, symbol='AAPL', period=14, buy_threshold=30, sell_threshold=70):
+class HybridStrategy:
+    def __init__(self, symbol='AAPL', rsi_period=14, rsi_buy=30, rsi_sell=70, ema_short=9, ema_long=21):
         self.symbol = symbol
-        self.period = period
-        self.buy_threshold = buy_threshold
-        self.sell_threshold = sell_threshold
+        self.rsi_period = rsi_period
+        self.rsi_buy = rsi_buy
+        self.rsi_sell = rsi_sell
+        self.ema_short = ema_short
+        self.ema_long = ema_long
         self.last_data = None
         self.last_fetch_time = 0
         self.fetch_interval = 3600  # Cache daily data for 1 hour (updates once per day anyway)
@@ -164,7 +198,7 @@ class RSIStrategy:
                             logging.info(f"[Data] {self.symbol} - Fetched {len(bars_df)} daily bars from Yahoo Finance")
                             break
                     
-                    if bars_df is None or bars_df.empty or len(bars_df) < self.period + 1:
+                    if bars_df is None or bars_df.empty or len(bars_df) < self.rsi_period + 1:
                         logging.warning(f"[Data] Attempt {attempt+1}: Insufficient data ({len(bars_df) if bars_df is not None else 0} bars)")
                         if attempt < 2:
                             time.sleep(2)
@@ -191,17 +225,24 @@ class RSIStrategy:
             logging.error("[Data] No close prices found")
             return 'HOLD'
 
-        # Calculate RSI
-        rsi_series = calculate_rsi(close_prices, period=self.period)
+        # Calculate indicators
+        rsi_series = calculate_rsi(close_prices, period=self.rsi_period)
+        ema_short_series = calculate_ema(close_prices, span=self.ema_short)
+        ema_long_series = calculate_ema(close_prices, span=self.ema_long)
         
-        # Get current RSI value (last valid value)
+        # Get current values
         rsi_value = safe_float(rsi_series.iloc[-1], 50.0)
+        ema_short_val = safe_float(ema_short_series.iloc[-1], 0.0)
+        ema_long_val = safe_float(ema_long_series.iloc[-1], 0.0)
         historical_price = safe_float(close_prices.iloc[-1], 0.0)
         
         # Validate RSI
         if pd.isna(rsi_value) or rsi_value < 0 or rsi_value > 100:
             logging.warning(f"[RSI] Invalid: {rsi_value}, holding")
             return 'HOLD'
+
+        # Detect EMA crossover
+        ema_signal = detect_ema_crossover(ema_short_series, ema_long_series)
 
         # Get live price for crypto
         live_price = get_live_price(api_symbol) if is_crypto else None
@@ -212,26 +253,31 @@ class RSIStrategy:
         rsi_change = rsi_value - prev_rsi
         
         price_source = "(live)" if live_price else "(historical)"
-        logging.info(f"[Heartbeat] {self.symbol} - Price: ${current_price:.2f} {price_source}, RSI: {rsi_value:.2f} ({rsi_change:+.2f})")
+        logging.info(f"[Heartbeat] {self.symbol} - Price: ${current_price:.2f} {price_source}, RSI: {rsi_value:.2f} ({rsi_change:+.2f}), EMA: {ema_signal}")
 
-        # Get current position (match both formats: ETH/USD and ETHUSD)
+        # Get current position
         qty = 0
         try:
             positions = trading_client.get_all_positions()
             for pos in positions:
-                # Match both "ETH/USD" and "ETHUSD" formats
                 if pos.symbol == api_symbol or pos.symbol == self.symbol:
                     qty = float(pos.qty)
-                    logging.debug(f"[Position] Found {qty} {pos.symbol}")
                     break
         except Exception as e:
             logging.error(f"[Position] Error: {e}")
 
-        # Trading logic
-        if rsi_value <= self.buy_threshold and qty == 0:
+        # HYBRID TRADING LOGIC
+        # BUY: RSI oversold (≤30) AND bullish EMA trend
+        if rsi_value <= self.rsi_buy and ema_signal in ['BULLISH', 'BULLISH_TREND'] and qty == 0:
+            logging.info(f"🎯 BUY SIGNAL: RSI {rsi_value:.2f} ≤ {self.rsi_buy} + {ema_signal}")
             return 'BUY'
-        elif rsi_value >= self.sell_threshold and qty > 0:
+        
+        # SELL: RSI overbought (≥70) OR bearish EMA crossover (protect profits)
+        elif (rsi_value >= self.rsi_sell or ema_signal == 'BEARISH') and qty > 0:
+            reason = f"RSI {rsi_value:.2f} ≥ {self.rsi_sell}" if rsi_value >= self.rsi_sell else f"{ema_signal} crossover"
+            logging.info(f"🎯 SELL SIGNAL: {reason}")
             return 'SELL'
+        
         else:
             return 'HOLD'
 
@@ -256,16 +302,17 @@ class TradingBot:
         is_crypto = self.strategy.symbol.endswith('USD')
         api_symbol = self.strategy.get_symbol_for_api()
         
-        logging.info(f"=== TRADING BOT SETTINGS ===")
+        logging.info(f"=== HYBRID TRADING BOT SETTINGS ===")
         logging.info(f"Symbol: {self.strategy.symbol}")
         logging.info(f"API Symbol: {api_symbol}")
         logging.info(f"Asset Type: {'crypto' if is_crypto else 'stock'}")
-        logging.info(f"RSI Period: {self.strategy.period}")
-        logging.info(f"Buy Threshold: ≤{self.strategy.buy_threshold}")
-        logging.info(f"Sell Threshold: ≥{self.strategy.sell_threshold}")
+        logging.info(f"Strategy: RSI + EMA Crossover (Hybrid)")
+        logging.info(f"RSI Period: {self.strategy.rsi_period}")
+        logging.info(f"RSI Buy: ≤{self.strategy.rsi_buy}, Sell: ≥{self.strategy.rsi_sell}")
+        logging.info(f"EMA: {self.strategy.ema_short}/{self.strategy.ema_long}")
         logging.info(f"Risk per Trade: {self.risk_per_trade_pct}%")
         logging.info(f"===============================")
-        logging.info(f"Starting real-time trading bot...")
+        logging.info(f"Starting hybrid trading bot...")
         
         self.print_portfolio_status()
         cycle_count = 0
@@ -359,11 +406,13 @@ class TradingBot:
 
 
 if __name__ == "__main__":
-    strategy = RSIStrategy(
+    strategy = HybridStrategy(
         symbol=TRADING_SYMBOL,
-        period=RSI_PERIOD,
-        buy_threshold=RSI_BUY_THRESH,
-        sell_threshold=RSI_SELL_THRESH
+        rsi_period=RSI_PERIOD,
+        rsi_buy=RSI_BUY_THRESH,
+        rsi_sell=RSI_SELL_THRESH,
+        ema_short=EMA_SHORT,
+        ema_long=EMA_LONG
     )
     bot = TradingBot(strategy, risk_per_trade_pct=TRADING_RISK_PCT)
     bot.run()
