@@ -136,7 +136,8 @@ class HybridStrategy:
         self.ema_long = ema_long
         self.last_data = None
         self.last_fetch_time = 0
-        self.fetch_interval = 3600  # Cache daily data for 1 hour (updates once per day anyway)
+        # Cache for 5 minutes (hourly data updates every hour, but check more frequently)
+        self.fetch_interval = 300
 
     def get_symbol_for_api(self):
         """Convert symbol to API format"""
@@ -171,9 +172,10 @@ class HybridStrategy:
                         }
                         coin_id = coin_map.get(api_symbol)
                         if coin_id:
-                            # Get 30 days of daily data from CoinGecko
+                            # Get hourly data for crypto (RSI periods = 14 hours ~= 14 days worth)
+                            # Fetch enough data: 14 periods * 24 hours = 336 hours (14 days)
                             url = f'https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart'
-                            params = {'vs_currency': 'usd', 'days': '30', 'interval': 'daily'}
+                            params = {'vs_currency': 'usd', 'days': '30', 'interval': 'hourly'}
                             response = requests.get(url, params=params, timeout=10)
                             data = response.json()
                             
@@ -183,10 +185,11 @@ class HybridStrategy:
                                 df = pd.DataFrame(prices, columns=['timestamp', 'Close'])
                                 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
                                 df = df.set_index('timestamp')
-                                bars_df = df
+                                # Take last 336 hours (14 days worth for RSI 14)
+                                bars_df = df.tail(self.rsi_period * 24)
                                 self.last_data = bars_df
                                 self.last_fetch_time = current_time
-                                logging.info(f"[Data] {self.symbol} - Fetched {len(bars_df)} daily bars from CoinGecko")
+                                logging.info(f"[Data] {self.symbol} - Fetched {len(bars_df)} hourly bars from CoinGecko")
                                 break
                     else:
                         # Use Yahoo Finance for stocks (daily bars)
