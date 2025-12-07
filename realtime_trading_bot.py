@@ -127,15 +127,22 @@ class RSIStrategy:
             for attempt in range(3):
                 try:
                     symbol_for_yf = f"{self.symbol[:-3]}-USD" if is_crypto else self.symbol
-                    # Use daily bars for RSI calculation (standard for financial analysis)
-                    data = yf.download(symbol_for_yf, period='60d', interval='1d', progress=False, auto_adjust=True)
+                    
+                    # For crypto, use hourly bars (more reliable on Yahoo Finance)
+                    # For stocks, use daily bars
+                    if is_crypto:
+                        data = yf.download(symbol_for_yf, period='30d', interval='1h', progress=False, auto_adjust=True)
+                        bars_to_take = self.period * 24  # 14 periods * 24 hours = 14 "days" of hourly data
+                    else:
+                        data = yf.download(symbol_for_yf, period='60d', interval='1d', progress=False, auto_adjust=True)
+                        bars_to_take = 30
                     
                     if not data.empty and len(data) >= self.period + 1:
-                        # Take last 30 days of data for RSI calculation
-                        bars_df = data.tail(30)
+                        bars_df = data.tail(bars_to_take)
                         self.last_data = bars_df
                         self.last_fetch_time = current_time
-                        logging.info(f"[Data] {self.symbol} - Fetched {len(bars_df)} daily bars")
+                        interval_name = "hourly" if is_crypto else "daily"
+                        logging.info(f"[Data] {self.symbol} - Fetched {len(bars_df)} {interval_name} bars")
                         break
                     else:
                         logging.warning(f"[Data] Attempt {attempt+1}: Insufficient data ({len(data) if not data.empty else 0} bars)")
