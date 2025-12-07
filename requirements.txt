@@ -1,0 +1,5 @@
+alpaca-py==0.21.0
+yfinance==0.2.35
+pandas==2.1.4
+requests==2.31.0
+python-dotenv==1.0.0

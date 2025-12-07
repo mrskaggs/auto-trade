@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  trading-bot:
+    build: .
+    container_name: alpaca-trading-bot
+    restart: unless-stopped
+    environment:
+      # Required: Alpaca API Credentials
+      - APCA_API_KEY_ID=${APCA_API_KEY_ID}
+      - APCA_API_SECRET_KEY=${APCA_API_SECRET_KEY}
+      - APCA_API_BASE_URL=${APCA_API_BASE_URL:-https://paper-api.alpaca.markets}
+      
+      # Optional: Trading Parameters
+      - TRADING_SYMBOL=${TRADING_SYMBOL:-BTCUSD}
+      - TRADING_RISK_PCT=${TRADING_RISK_PCT:-1.0}
+      - RSI_PERIOD=${RSI_PERIOD:-14}
+      - RSI_BUY_THRESH=${RSI_BUY_THRESH:-30}
+      - RSI_SELL_THRESH=${RSI_SELL_THRESH:-70}
+    
+    # Resource limits (adjust as needed)
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    
+    # Health check
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f realtime_trading_bot.py || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

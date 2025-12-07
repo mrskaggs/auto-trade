@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# Environment files
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+README.md
+*.md
+
+# Other trading bots (only deploy realtime bot)
+trading_simulator.py
+ui_trading_bot.py
+
+# Data files
+*.csv
+*.png
+*.log
+
+# Node modules (if any)
+node_modules/
+trading-bot-mcp/
+
+# OS
+.DS_Store
+Thumbs.db
